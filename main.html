@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chicken Tracker</title>
+
+  <script>
+  // ============================================================
+  //  BACKEND TOGGLE
+  //  Set USE_FIREBASE = true and fill in firebaseConfig below
+  //  when you're ready to go live. Until then, mock mode runs
+  //  everything in memory — no Firebase account needed.
+  // ============================================================
+  const USE_FIREBASE = false;
+
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "YOUR_SENDER_ID",
+    appId: "YOUR_APP_ID"
+  };
+
+  // ── Mock backend ─────────────────────────────────────────────
+  const mock = (() => {
+    let state = null;
+    let players = {};
+    const stateListeners = [];
+    const playerListeners = [];
+
+    function notifyState() {
+      stateListeners.forEach(fn => fn(state ? { exists: true, data: () => ({ ...state }) } : { exists: false }));
+    }
+    function notifyPlayers() {
+      const sorted = Object.values(players).sort((a, b) => b.score - a.score);
+      playerListeners.forEach(fn => fn(sorted));
+    }
+
+    return {
+      onStateSnapshot(fn) { stateListeners.push(fn); fn(state ? { exists: true, data: () => ({ ...state }) } : { exists: false }); },
+      onPlayersSnapshot(fn) { playerListeners.push(fn); notifyPlayers(); },
+      async getPlayer(name) { return players[name] ? { exists: true, data: () => ({ ...players[name] }) } : { exists: false }; },
+      async setPlayer(name, data) { players[name] = { ...players[name], ...data }; notifyPlayers(); },
+      async updatePlayer(name, data) { players[name] = { ...players[name], ...data }; notifyPlayers(); },
+      async setState(data) { state = { ...state, ...data, lastFoundAt: data.lastFoundAt === 'SERVER' ? new Date() : (state?.lastFoundAt ?? null) }; notifyState(); },
+    };
+  })();
+  </script>
+
+  <script type="module">
+    let db, STATE_DOC, playersCol,
+        _onSnapshot, _setDoc, _getDoc, _updateDoc, _doc, _collection, _query, _orderBy;
+
+    if (USE_FIREBASE) {
+      const fb   = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
+      const fs   = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+      const app  = fb.initializeApp(firebaseConfig);
+      db         = fs.getFirestore(app);
+      STATE_DOC  = fs.doc(db, "ballhunt", "state");
+      playersCol = fs.collection(db, "ballhunt_players");
+      _onSnapshot = fs.onSnapshot; _setDoc = fs.setDoc; _getDoc = fs.getDoc;
+      _updateDoc  = fs.updateDoc;  _doc    = fs.doc;
+      _query = fs.query; _orderBy = fs.orderBy;
+    }
+
+    function listenState(fn) {
+      if (USE_FIREBASE) return _onSnapshot(STATE_DOC, fn);
+      mock.onStateSnapshot(fn);
+    }
+    function listenPlayers(fn) {
+      if (USE_FIREBASE) {
+        const q = _query(playersCol, _orderBy("score", "desc"));
+        return _onSnapshot(q, snap => { const arr = []; snap.forEach(d => arr.push(d.data())); fn(arr); });
+      }
+      mock.onPlayersSnapshot(fn);
+    }
+    async function getPlayer(name) {
+      if (USE_FIREBASE) { return _getDoc(_doc(playersCol, name)); }
+      return mock.getPlayer(name);
+    }
+    async function setPlayer(name, data) {
+      if (USE_FIREBASE) return _setDoc(_doc(playersCol, name), data, { merge: true });
+      return mock.setPlayer(name, data);
+    }
+    async function updatePlayer(name, data) {
+      if (USE_FIREBASE) return _updateDoc(_doc(playersCol, name), data);
+      return mock.updatePlayer(name, data);
+    }
+    async function setState(data) {
+      if (USE_FIREBASE) return _setDoc(STATE_DOC, data, { merge: true });
+      const d = { ...data };
+      if (d.lastFoundAt && typeof d.lastFoundAt !== 'string') d.lastFoundAt = 'SERVER';
+      return mock.setState(d);
+    }
+
+    // ── Name registration ─────────────────────────────────────
+    let myName = localStorage.getItem("ballhunt_name");
+
+    function showNameModal() {
+      document.getElementById("name-modal").classList.remove("hidden");
+      setTimeout(() => document.getElementById("name-input").focus(), 50);
+    }
+
+    async function saveName() {
+      const val = document.getElementById("name-input").value.trim();
+      if (!val) { shake(document.getElementById("name-input")); return; }
+      myName = val;
+      localStorage.setItem("ballhunt_name", myName);
+      const snap = await getPlayer(myName);
+      if (!snap.exists) await setPlayer(myName, { name: myName, score: 0 });
+      document.getElementById("name-modal").classList.add("hidden");
+    }
+
+    document.getElementById("name-submit").addEventListener("click", saveName);
+    document.getElementById("name-input").addEventListener("keydown", e => { if (e.key === "Enter") saveName(); });
+
+    if (!myName) showNameModal();
+
+    // ── Live state ────────────────────────────────────────────
+    listenState((snap) => {
+      if (!snap.exists) {
+        document.getElementById("current-hint").textContent = "No hint yet — be the first to hide the Chicken!";
+        document.getElementById("last-found-by").textContent = "—";
+        document.getElementById("hidden-by").textContent = "—";
+        document.getElementById("last-found-when").textContent = "";
+        return;
+      }
+      const d = snap.data();
+      document.getElementById("current-hint").textContent = d.hint || "No hint set.";
+      document.getElementById("last-found-by").textContent = d.lastFoundBy || "—";
+      document.getElementById("hidden-by").textContent = d.hiddenBy || "—";
+      const ts = d.lastFoundAt;
+      if (ts) {
+        const date = ts.toDate ? ts.toDate() : (ts instanceof Date ? ts : null);
+        document.getElementById("last-found-when").textContent = date ? formatRelative(date) : "";
+      }
+      bounceBall();
+    });
+
+    // ── Live leaderboard ──────────────────────────────────────
+    listenPlayers((players) => {
+      const list = document.getElementById("leaderboard-list");
+      list.innerHTML = "";
+      const scored = players.filter(p => p.score > 0);
+      if (!scored.length) {
+        list.innerHTML = `<li class="lb-empty">No scores yet — find the Chicken!</li>`;
+        return;
+      }
+      scored.forEach((p, i) => {
+        const rank = i + 1;
+        const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : `${rank}.`;
+        const li = document.createElement("li");
+        li.className = "lb-row" + (p.name === myName ? " lb-me" : "");
+        li.innerHTML = `<span class="lb-rank">${medal}</span><span class="lb-name">${p.name}${p.name === myName ? ' <span class="lb-you">you</span>' : ''}</span><span class="lb-score">${p.score} pt${p.score !== 1 ? "s" : ""}</span>`;
+        list.appendChild(li);
+      });
+    });
+
+    // ── Found it ──────────────────────────────────────────────
+    document.getElementById("found-btn").addEventListener("click", async () => {
+      if (!myName) { showNameModal(); return; }
+      await setState({ lastFoundBy: myName, lastFoundAt: USE_FIREBASE ? { serverTimestamp: true } : new Date() });
+      const snap = await getPlayer(myName);
+      if (snap.exists) {
+        await updatePlayer(myName, { score: (snap.data().score || 0) + 1 });
+      } else {
+        await setPlayer(myName, { name: myName, score: 1 });
+      }
+      flash("🎉 Nice find, " + myName + "! +1 point");
+    });
+
+    // ── Hid it ────────────────────────────────────────────────
+    document.getElementById("hide-btn").addEventListener("click", () => {
+      if (!myName) { showNameModal(); return; }
+      const form = document.getElementById("hide-form");
+      const isHidden = form.classList.contains("hidden");
+      form.classList.toggle("hidden", !isHidden);
+      if (isHidden) setTimeout(() => document.getElementById("hint-input").focus(), 50);
+    });
+
+    document.getElementById("submit-hide").addEventListener("click", async () => {
+      const hint = document.getElementById("hint-input").value.trim();
+      if (!hint) { shake(document.getElementById("hint-input")); return; }
+      await setState({ hiddenBy: myName, hint });
+      document.getElementById("hint-input").value = "";
+      document.getElementById("hide-form").classList.add("hidden");
+      flash("🫣 Chicken hidden! Good luck everyone.");
+    });
+
+    document.getElementById("cancel-hide").addEventListener("click", () => {
+      document.getElementById("hide-form").classList.add("hidden");
+    });
+
+    document.getElementById("hint-input").addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("submit-hide").click(); }
+    });
+
+    // ── Helpers ───────────────────────────────────────────────
+    function bounceBall() {
+      const b = document.getElementById("the-ball");
+      b.classList.remove("bounce"); void b.offsetWidth; b.classList.add("bounce");
+    }
+    function shake(el) {
+      el.classList.remove("shake"); void el.offsetWidth; el.classList.add("shake");
+    }
+    function flash(msg) {
+      const bar = document.getElementById("status-bar");
+      bar.textContent = msg; bar.classList.add("show");
+      setTimeout(() => bar.classList.remove("show"), 3000);
+    }
+    function formatRelative(date) {
+      const diff = Math.floor((Date.now() - date) / 1000);
+      if (diff < 60) return "just now";
+      if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+      if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+      return Math.floor(diff / 86400) + "d ago";
+    }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --cream: #f2f2f2; --ink: #1a1209;
+      --gold: #e8a020;  --gold-dark: #b07010;
+      --red: #e04040;   --red-dark: #b02020;
+      --green: #2e8b57; --green-dark: #1a5c38;
+      --card: #ffffff;  --border: #e8d5b5;
+      --shadow: rgba(90,50,10,0.12); --muted: #8a7055;
+    }
+
+    body {
+      background: var(--cream);
+      font-family: 'DM Sans', sans-serif;
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 24px 16px 64px;
+    }
+
+    /* ── CSS Football ── */
+    .football {
+      display: block;
+      position: relative;
+      width: 90px;
+      height: 58px;
+      background: #e04040;
+      border-radius: 50%;
+      box-shadow: 0 4px 14px rgba(90,50,10,0.3);
+    }
+
+    .football-sm {
+      width: 64px;
+      height: 42px;
+    }
+
+    /* Horizontal lace strip */
+    .football::before {
+      content: '';
+      position: absolute;
+      left: 20%; right: 20%;
+      top: 50%; transform: translateY(-50%);
+      height: 3px;
+      background: #c02030;
+      border-radius: 2px;
+      box-shadow: 0 2px 3px rgba(0,0,0,0.4);
+    }
+
+    /* Lace cross-stitches */
+    .football::after {
+      content: '';
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 50%;
+      height: 13px;
+      background:
+        linear-gradient(#c02030, #c02030) 20%   center / 3px 100% no-repeat,
+        linear-gradient(#c02030, #c02030) 40%   center / 3px 100% no-repeat,
+        linear-gradient(#c02030, #c02030) 60%   center / 3px 100% no-repeat,
+        linear-gradient(#c02030, #c02030) 80%   center / 3px 100% no-repeat;
+      filter: drop-shadow(0 2px 2px rgba(0,0,0,0.35));
+    }
+
+    /* ── Bounce ── */
+    #the-ball {
+      margin: 0 auto 10px;
+      transform-origin: center bottom;
+    }
+    #the-ball.bounce { animation: bounce 0.5s cubic-bezier(0.36,0.07,0.19,0.97); }
+    @keyframes bounce {
+      0%   { transform: scale(1); }
+      30%  { transform: scale(1.3,.75) translateY(8px); }
+      60%  { transform: scale(.85,1.15) translateY(-12px); }
+      80%  { transform: scale(1.05,.95); }
+      100% { transform: scale(1); }
+    }
+
+    /* ── Mock badge ── */
+    .mock-badge {
+      background: #fff3cd; border: 1.5px solid #f0c040;
+      border-radius: 8px; padding: 7px 14px;
+      font-size: 0.78rem; color: #7a5800;
+      margin-bottom: 14px; width: 100%; max-width: 420px;
+      text-align: center; font-weight: 500;
+    }
+
+    /* ── Name modal ── */
+    .modal-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(26,18,9,0.6);
+      backdrop-filter: blur(5px);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 200; padding: 20px;
+    }
+    .modal-backdrop.hidden { display: none; }
+    .modal-card {
+      background: var(--card); border: 1.5px solid var(--border);
+      border-radius: 22px; padding: 32px 26px 26px;
+      width: 100%; max-width: 340px;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.22);
+      text-align: center;
+      animation: popIn 0.25s cubic-bezier(0.34,1.56,0.64,1);
+    }
+    @keyframes popIn {
+      from { opacity: 0; transform: scale(0.85); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    .modal-card h2 { font-family: 'Lilita One', cursive; font-size: 1.5rem; margin-bottom: 6px; }
+    .modal-card p { font-size: 0.83rem; color: var(--muted); margin-bottom: 20px; line-height: 1.5; }
+
+    /* ── Header ── */
+    header { text-align: center; margin-bottom: 22px; }
+    h1 { font-family: 'Lilita One', cursive; font-size: 2rem; }
+    h1 span { color: var(--red); }
+    .subtitle { font-size: 0.82rem; color: var(--muted); margin-top: 3px; }
+
+    /* ── Card ── */
+    .card {
+      background: var(--card); border: 1.5px solid var(--border);
+      border-radius: 18px; padding: 20px 22px;
+      width: 100%; max-width: 420px;
+      box-shadow: 0 4px 20px var(--shadow); margin-bottom: 12px;
+    }
+    .card-label {
+      font-size: 0.68rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.12em;
+      color: #b08040; margin-bottom: 5px;
+    }
+    .hint-text { font-family: 'Lilita One', cursive; font-size: 1.3rem; line-height: 1.35; }
+    .meta-row { display: flex; gap: 18px; margin-top: 14px; }
+    .meta-item { flex: 1; }
+    .meta-value { font-size: 0.95rem; font-weight: 600; }
+    .meta-when { font-size: 0.72rem; color: var(--muted); }
+
+    /* ── Buttons ── */
+    .btn-row { display: flex; gap: 10px; width: 100%; max-width: 420px; margin-bottom: 12px; }
+    .btn {
+      flex: 1; padding: 14px 12px; border: none; border-radius: 13px;
+      font-family: 'Lilita One', cursive; font-size: 1rem; cursor: pointer;
+      letter-spacing: 0.02em; transition: transform 0.08s;
+    }
+    .btn-found {
+      background: var(--gold); color: var(--ink);
+      box-shadow: 0 4px 0 var(--gold-dark), 0 6px 16px rgba(220,150,0,0.28);
+    }
+    .btn-found:active { box-shadow: 0 1px 0 var(--gold-dark); transform: translateY(3px); }
+    .btn-hide {
+      background: var(--red); color: #fff;
+      box-shadow: 0 4px 0 var(--red-dark), 0 6px 16px rgba(217,79,46,0.28);
+    }
+    .btn-hide:active { box-shadow: 0 1px 0 var(--red-dark); transform: translateY(3px); }
+
+    /* ── Inline form ── */
+    .inline-form {
+      background: var(--card); border: 1.5px solid var(--border);
+      border-radius: 18px; padding: 18px 20px;
+      width: 100%; max-width: 420px;
+      box-shadow: 0 4px 20px var(--shadow);
+      margin-bottom: 12px;
+      animation: slideDown 0.2s ease;
+    }
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .inline-form.hidden { display: none; }
+    .form-title { font-family: 'Lilita One', cursive; font-size: 1rem; margin-bottom: 12px; }
+
+    input[type="text"], textarea {
+      width: 100%; padding: 10px 13px;
+      border: 1.5px solid var(--border); border-radius: 10px;
+      background: var(--cream); font-family: 'DM Sans', sans-serif;
+      font-size: 0.95rem; color: var(--ink);
+      margin-bottom: 10px; transition: border-color 0.15s; resize: vertical;
+    }
+    input[type="text"]:focus, textarea:focus { outline: none; border-color: var(--gold); }
+    textarea { min-height: 70px; }
+
+    .form-actions { display: flex; gap: 8px; }
+    .btn-submit {
+      flex: 1; padding: 11px; border: none; border-radius: 10px;
+      font-family: 'Lilita One', cursive; font-size: 0.95rem; cursor: pointer;
+      background: var(--gold); color: var(--ink);
+      box-shadow: 0 3px 0 var(--gold-dark); transition: transform 0.08s;
+    }
+    .btn-submit:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--gold-dark); }
+    .cancel-btn {
+      padding: 11px 16px; border: 1.5px solid var(--border); border-radius: 10px;
+      background: transparent; font-family: 'DM Sans', sans-serif;
+      font-size: 0.88rem; color: var(--muted); cursor: pointer;
+    }
+
+    /* ── Leaderboard ── */
+    .leaderboard { width: 100%; max-width: 420px; margin-top: 8px; }
+    .lb-header {
+      font-family: 'Lilita One', cursive; font-size: 1.15rem;
+      margin-bottom: 10px; display: flex; align-items: center; gap: 10px;
+    }
+    .lb-header::after { content: ''; flex: 1; height: 1.5px; background: var(--border); border-radius: 2px; }
+    #leaderboard-list { list-style: none; display: flex; flex-direction: column; gap: 7px; }
+    .lb-row {
+      background: var(--card); border: 1.5px solid var(--border);
+      border-radius: 12px; padding: 11px 16px;
+      display: flex; align-items: center; gap: 10px;
+      box-shadow: 0 2px 8px var(--shadow);
+    }
+    .lb-row.lb-me { border-color: var(--gold); background: #fffbf0; }
+    .lb-rank { font-size: 1.1rem; min-width: 28px; }
+    .lb-name { flex: 1; font-weight: 600; font-size: 0.95rem; }
+    .lb-you {
+      display: inline-block; font-family: 'DM Sans', sans-serif;
+      font-size: 0.68rem; font-weight: 600;
+      background: var(--gold); color: var(--ink);
+      border-radius: 20px; padding: 1px 7px; margin-left: 6px;
+      vertical-align: middle; text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .lb-score { font-family: 'Lilita One', cursive; font-size: 1rem; color: var(--gold); }
+    .lb-empty { text-align: center; color: var(--muted); font-style: italic; font-size: 0.88rem; padding: 18px 0; }
+
+    /* ── Toast ── */
+    #status-bar {
+      position: fixed; bottom: 24px; left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: var(--ink); color: #fff;
+      padding: 12px 22px; border-radius: 40px;
+      font-size: 0.88rem; font-weight: 500; white-space: nowrap;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1);
+      z-index: 99;
+    }
+    #status-bar.show { transform: translateX(-50%) translateY(0); }
+
+    /* ── Shake ── */
+    @keyframes shake {
+      0%,100% { transform: translateX(0); }
+      20%      { transform: translateX(-6px); }
+      40%      { transform: translateX(6px); }
+      60%      { transform: translateX(-4px); }
+      80%      { transform: translateX(4px); }
+    }
+    .shake { animation: shake 0.35s ease; border-color: var(--red) !important; }
+  </style>
+</head>
+<body style="background:#f2f2f2;">
+
+  <!-- Name modal -->
+  <div class="modal-backdrop hidden" id="name-modal">
+    <div class="modal-card">
+      <div class="football football-sm" style="margin: 0 auto 16px;"></div>
+      <h2>Hey, who are you?</h2>
+      <p>This device will remember your name so you can claim finds and earn points.</p>
+      <input type="text" id="name-input" placeholder="Your name" autocomplete="off" maxlength="24" />
+      <button class="btn-submit" id="name-submit" style="width:100%;padding:13px;font-size:1.05rem;">Let's Play</button>
+    </div>
+  </div>
+
+  <header>
+    <div class="football" id="the-ball"></div>
+    <h1>Chicken <span>Tracker</span></h1>
+    <p class="subtitle">Where's the Chicken hiding today?</p>
+  </header>
+
+  <div class="mock-badge" id="mock-badge" style="display:none">
+    🧪 <strong>Test mode</strong> — data lives in memory only, resets on refresh
+  </div>
+
+  <div class="card">
+    <div class="card-label">Current Hint</div>
+    <div class="hint-text" id="current-hint">No hint yet — be the first to hide the Chicken!</div>
+    <div class="meta-row">
+      <div class="meta-item">
+        <div class="card-label">Last Found By</div>
+        <div class="meta-value" id="last-found-by">—</div>
+        <div class="meta-when" id="last-found-when"></div>
+      </div>
+      <div class="meta-item">
+        <div class="card-label">Hidden By</div>
+        <div class="meta-value" id="hidden-by">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn btn-found" id="found-btn">🎉 I Found It!</button>
+    <button class="btn btn-hide" id="hide-btn">🫣 I Hid It</button>
+  </div>
+
+  <div class="inline-form hidden" id="hide-form">
+    <div class="form-title">🫣 Okay, drop a hint…</div>
+    <textarea id="hint-input" placeholder="e.g. Near the power tools, something smells like sawdust…"></textarea>
+    <div class="form-actions">
+      <button class="btn-submit" id="submit-hide">Set the Hint</button>
+      <button class="cancel-btn" id="cancel-hide">Cancel</button>
+    </div>
+  </div>
+
+  <div class="leaderboard">
+    <div class="lb-header">🏆 Leaderboard</div>
+    <ul id="leaderboard-list">
+      <li class="lb-empty">No scores yet — find the Chicken!</li>
+    </ul>
+  </div>
+
+  <div id="status-bar"></div>
+
+  <script>
+    if (!USE_FIREBASE) document.getElementById("mock-badge").style.display = "block";
+  </script>
+
+</body>
+</html>
