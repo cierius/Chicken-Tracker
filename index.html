@@ -144,7 +144,7 @@
 
     listenState((snap) => {
       if (!snap.exists) {
-        document.getElementById("current-hint").textContent = "No hint yet — be the first to hide the Chicken!";
+        document.getElementById("current-hint").textContent = "Waiting to be hidden!";
         document.getElementById("last-found-by").textContent = "—";
         document.getElementById("hidden-by").textContent = "—";
         document.getElementById("last-found-when").textContent = "";
