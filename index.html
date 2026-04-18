@@ -119,12 +119,37 @@
     if (!myName) showNameModal();
 
     // ── Live state ────────────────────────────────────────────
+    let gameStatus = "unhidden"; // "unhidden" | "hidden" | "found"
+
+    function updateButtons() {
+      const foundBtn = document.getElementById("found-btn");
+      const hideBtn  = document.getElementById("hide-btn");
+      const hideForm = document.getElementById("hide-form");
+
+      if (gameStatus === "hidden") {
+        // Ball is hidden — can only find it
+        foundBtn.disabled = false;
+        foundBtn.style.opacity = "1";
+        hideBtn.disabled = true;
+        hideBtn.style.opacity = "0.35";
+        hideForm.classList.add("hidden");
+      } else {
+        // Unhidden or found — can only hide it
+        foundBtn.disabled = true;
+        foundBtn.style.opacity = "0.35";
+        hideBtn.disabled = false;
+        hideBtn.style.opacity = "1";
+      }
+    }
+
     listenState((snap) => {
       if (!snap.exists) {
         document.getElementById("current-hint").textContent = "No hint yet — be the first to hide the Chicken!";
         document.getElementById("last-found-by").textContent = "—";
         document.getElementById("hidden-by").textContent = "—";
         document.getElementById("last-found-when").textContent = "";
+        gameStatus = "unhidden";
+        updateButtons();
         return;
       }
       const d = snap.data();
@@ -136,6 +161,8 @@
         const date = ts.toDate ? ts.toDate() : (ts instanceof Date ? ts : null);
         document.getElementById("last-found-when").textContent = date ? formatRelative(date) : "";
       }
+      gameStatus = d.status || "unhidden";
+      updateButtons();
       bounceBall();
     });
 
@@ -159,9 +186,15 @@
     });
 
     // ── Found it ──────────────────────────────────────────────
-    document.getElementById("found-btn").addEventListener("click", async () => {
+    document.getElementById("found-btn").addEventListener("click", () => {
       if (!myName) { showNameModal(); return; }
-      await setState({ lastFoundBy: myName, lastFoundAt: USE_FIREBASE ? { serverTimestamp: true } : new Date() });
+      if (gameStatus !== "hidden") return;
+      document.getElementById("confirm-modal").classList.remove("hidden");
+    });
+
+    document.getElementById("confirm-yes").addEventListener("click", async () => {
+      document.getElementById("confirm-modal").classList.add("hidden");
+      await setState({ lastFoundBy: myName, lastFoundAt: USE_FIREBASE ? { serverTimestamp: true } : new Date(), status: "found" });
       const snap = await getPlayer(myName);
       if (snap.exists) {
         await updatePlayer(myName, { score: (snap.data().score || 0) + 1 });
@@ -169,6 +202,10 @@
         await setPlayer(myName, { name: myName, score: 1 });
       }
       flash("🎉 Nice find, " + myName + "! +1 point");
+    });
+
+    document.getElementById("confirm-no").addEventListener("click", () => {
+      document.getElementById("confirm-modal").classList.add("hidden");
     });
 
     // ── Hid it ────────────────────────────────────────────────
@@ -183,7 +220,7 @@
     document.getElementById("submit-hide").addEventListener("click", async () => {
       const hint = document.getElementById("hint-input").value.trim();
       if (!hint) { shake(document.getElementById("hint-input")); return; }
-      await setState({ hiddenBy: myName, hint });
+      await setState({ hiddenBy: myName, hint, status: "hidden" });
       document.getElementById("hint-input").value = "";
       document.getElementById("hide-form").classList.add("hidden");
       flash("🫣 Chicken hidden! Good luck everyone.");
@@ -196,6 +233,101 @@
     document.getElementById("hint-input").addEventListener("keydown", e => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("submit-hide").click(); }
     });
+
+    // ── Long press on football → admin ──────────────────────
+    let pressTimer = null;
+    const ballEl = document.getElementById("the-ball");
+
+    ballEl.addEventListener("pointerdown", () => {
+      pressTimer = setTimeout(() => showAdminPassword(), 500);
+    });
+    ["pointerup", "pointerleave", "pointercancel"].forEach(e =>
+      ballEl.addEventListener(e, () => clearTimeout(pressTimer))
+    );
+
+    function showAdminPassword() {
+      document.getElementById("admin-pw-modal").classList.remove("hidden");
+      setTimeout(() => document.getElementById("admin-pw-input").focus(), 50);
+    }
+
+    document.getElementById("admin-pw-submit").addEventListener("click", checkAdminPw);
+    document.getElementById("admin-pw-input").addEventListener("keydown", e => { if (e.key === "Enter") checkAdminPw(); });
+    document.getElementById("admin-pw-cancel").addEventListener("click", () => {
+      document.getElementById("admin-pw-modal").classList.add("hidden");
+      document.getElementById("admin-pw-input").value = "";
+      document.getElementById("admin-pw-error").classList.add("hidden");
+    });
+
+    function checkAdminPw() {
+      const val = document.getElementById("admin-pw-input").value;
+      if (val === "2161") {
+        document.getElementById("admin-pw-modal").classList.add("hidden");
+        document.getElementById("admin-pw-input").value = "";
+        document.getElementById("admin-pw-error").classList.add("hidden");
+        openAdminPanel();
+      } else {
+        shake(document.getElementById("admin-pw-input"));
+        document.getElementById("admin-pw-error").classList.remove("hidden");
+      }
+    }
+
+    // ── Admin panel ───────────────────────────────────────────
+    function openAdminPanel() {
+      const panel = document.getElementById("admin-panel");
+      panel.classList.remove("hidden");
+      renderAdminPlayers();
+    }
+
+    document.getElementById("admin-close").addEventListener("click", () => {
+      document.getElementById("admin-panel").classList.add("hidden");
+    });
+
+    document.getElementById("admin-reset").addEventListener("click", async () => {
+      await setState({ status: "found", hint: "— reset by admin —" });
+      flash("🔧 Ball reset to unhidden.");
+      document.getElementById("admin-panel").classList.add("hidden");
+    });
+
+    let adminPlayers = [];
+
+    listenPlayers((players) => {
+      adminPlayers = players;
+      if (!document.getElementById("admin-panel").classList.contains("hidden")) {
+        renderAdminPlayers();
+      }
+    });
+
+    function renderAdminPlayers() {
+      const list = document.getElementById("admin-player-list");
+      list.innerHTML = "";
+      if (!adminPlayers.length) {
+        list.innerHTML = `<p style="color:var(--muted);font-size:0.85rem;">No players yet.</p>`;
+        return;
+      }
+      adminPlayers.forEach(p => {
+        const row = document.createElement("div");
+        row.className = "admin-player-row";
+        row.innerHTML = `
+          <span class="admin-player-name">${p.name}</span>
+          <div class="admin-score-controls">
+            <button class="admin-adj" data-name="${p.name}" data-delta="-1">−</button>
+            <span class="admin-score-val">${p.score}</span>
+            <button class="admin-adj" data-name="${p.name}" data-delta="1">+</button>
+          </div>`;
+        list.appendChild(row);
+      });
+      list.querySelectorAll(".admin-adj").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const name = btn.dataset.name;
+          const delta = parseInt(btn.dataset.delta);
+          const player = adminPlayers.find(p => p.name === name);
+          if (!player) return;
+          const newScore = Math.max(0, (player.score || 0) + delta);
+          await setPlayer(name, { name, score: newScore });
+          flash(`✏️ ${name}: ${newScore} pt${newScore !== 1 ? "s" : ""}`);
+        });
+      });
+    }
 
     // ── Helpers ───────────────────────────────────────────────
     function bounceBall() {
@@ -465,6 +597,115 @@
       80%      { transform: translateX(4px); }
     }
     .shake { animation: shake 0.35s ease; border-color: var(--red) !important; }
+
+    /* ── Admin password modal ── */
+    #admin-pw-error { color: var(--red); font-size: 0.8rem; margin-top: -6px; margin-bottom: 8px; }
+
+    /* ── Admin panel ── */
+    .admin-panel {
+      position: fixed; inset: 0;
+      background: rgba(26,18,9,0.6);
+      backdrop-filter: blur(5px);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 200; padding: 20px;
+    }
+    .admin-panel.hidden { display: none; }
+    .admin-card {
+      background: var(--card); border: 1.5px solid var(--border);
+      border-radius: 22px; padding: 26px;
+      width: 100%; max-width: 360px;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.22);
+      max-height: 80vh; overflow-y: auto;
+      animation: popIn 0.25s cubic-bezier(0.34,1.56,0.64,1);
+    }
+    .admin-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .admin-header h2 { font-family: 'Lilita One', cursive; font-size: 1.2rem; }
+    .admin-close-btn {
+      background: none; border: none; font-size: 1.3rem;
+      cursor: pointer; color: var(--muted); line-height: 1;
+    }
+    .admin-player-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+    }
+    .admin-player-row:last-child { border-bottom: none; }
+    .admin-player-name { font-weight: 600; font-size: 0.95rem; }
+    .admin-score-controls { display: flex; align-items: center; gap: 10px; }
+    .admin-adj {
+      width: 32px; height: 32px; border-radius: 8px;
+      border: 1.5px solid var(--border); background: var(--cream);
+      font-size: 1.1rem; cursor: pointer; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--ink); transition: background 0.1s;
+    }
+    .admin-adj:active { background: var(--border); }
+    .admin-score-val { font-family: 'Lilita One', cursive; font-size: 1rem; min-width: 24px; text-align: center; }
+    .admin-reset-btn {
+      width: 100%; margin-top: 18px; padding: 12px;
+      border: none; border-radius: 12px;
+      background: var(--red); color: #fff;
+      font-family: 'Lilita One', cursive; font-size: 0.95rem;
+      cursor: pointer; box-shadow: 0 3px 0 var(--red-dark);
+      transition: transform 0.08s;
+    }
+    .admin-reset-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--red-dark); }
+
+    /* Disable cursor on football for long press */
+    #the-ball { cursor: pointer; user-select: none; }
+
+    /* ── Confirm modal ── */
+    .confirm-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(26,18,9,0.5);
+      backdrop-filter: blur(4px);
+      display: flex; align-items: flex-end; justify-content: center;
+      z-index: 200; padding: 20px;
+    }
+    .confirm-backdrop.hidden { display: none; }
+    .confirm-sheet {
+      background: var(--card); border: 1.5px solid var(--border);
+      border-radius: 22px; padding: 28px 24px 24px;
+      width: 100%; max-width: 420px;
+      box-shadow: 0 -8px 40px rgba(0,0,0,0.18);
+      text-align: center;
+      animation: slideUp 0.25s cubic-bezier(0.34,1.56,0.64,1);
+    }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(40px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .confirm-ball {
+      width: 56px; height: 36px;
+      background: #e04040; border-radius: 50%;
+      margin: 0 auto 14px;
+      box-shadow: 0 4px 10px rgba(150,15,0,0.3);
+    }
+    .confirm-sheet h2 {
+      font-family: 'Lilita One', cursive;
+      font-size: 1.3rem; margin-bottom: 6px;
+    }
+    .confirm-sheet p {
+      font-size: 0.85rem; color: var(--muted);
+      margin-bottom: 20px; line-height: 1.5;
+    }
+    .confirm-btns { display: flex; gap: 10px; }
+    .confirm-yes {
+      flex: 1; padding: 13px; border: none; border-radius: 12px;
+      font-family: 'Lilita One', cursive; font-size: 1rem;
+      background: var(--gold); color: var(--ink);
+      box-shadow: 0 3px 0 var(--gold-dark); cursor: pointer;
+      transition: transform 0.08s;
+    }
+    .confirm-yes:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--gold-dark); }
+    .confirm-no {
+      flex: 1; padding: 13px; border: 1.5px solid var(--border);
+      border-radius: 12px; background: transparent;
+      font-family: 'DM Sans', sans-serif; font-size: 0.92rem;
+      color: var(--muted); cursor: pointer;
+    }
   </style>
 </head>
 <body style="background:#f2f2f2;">
@@ -513,7 +754,7 @@
 
   <div class="inline-form hidden" id="hide-form">
     <div class="form-title">🫣 Okay, drop a hint…</div>
-    <textarea id="hint-input" placeholder="e.g. Near the power tools, something smells like sawdust…"></textarea>
+    <textarea id="hint-input" placeholder="Give a general area in the store, or a department…"></textarea>
     <div class="form-actions">
       <button class="btn-submit" id="submit-hide">Set the Hint</button>
       <button class="cancel-btn" id="cancel-hide">Cancel</button>
@@ -525,6 +766,45 @@
     <ul id="leaderboard-list">
       <li class="lb-empty">No scores yet — find the Chicken!</li>
     </ul>
+  </div>
+
+  <!-- Found confirmation modal -->
+  <div class="confirm-backdrop hidden" id="confirm-modal">
+    <div class="confirm-sheet">
+      <div class="confirm-ball"></div>
+      <h2>You found the Chicken?</h2>
+      <p>Make sure you actually have it in hand before claiming the find!</p>
+      <div class="confirm-btns">
+        <button class="confirm-yes" id="confirm-yes">🎉 Yeah I got it!</button>
+        <button class="confirm-no" id="confirm-no">Nope, my bad</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin password modal -->
+  <div class="modal-backdrop hidden" id="admin-pw-modal">
+    <div class="modal-card">
+      <h2 style="margin-bottom:6px;">🔒 Admin Access</h2>
+      <p style="margin-bottom:16px;">Enter the admin password to continue.</p>
+      <p class="hidden" id="admin-pw-error">Wrong password, try again.</p>
+      <input type="password" id="admin-pw-input" placeholder="Password" autocomplete="off" />
+      <div class="form-actions">
+        <button class="btn-submit" id="admin-pw-submit" style="padding:11px;">Unlock</button>
+        <button class="cancel-btn" id="admin-pw-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin panel -->
+  <div class="admin-panel hidden" id="admin-panel">
+    <div class="admin-card">
+      <div class="admin-header">
+        <h2>🔧 Admin</h2>
+        <button class="admin-close-btn" id="admin-close">✕</button>
+      </div>
+      <div id="admin-player-list"></div>
+      <button class="admin-reset-btn" id="admin-reset">Reset — Ball is back in play</button>
+    </div>
   </div>
 
   <div id="status-bar"></div>
