@@ -530,9 +530,13 @@
       user-select: text;
       -webkit-user-select: text;
     }
-    /* Prevent double-tap zoom on all buttons and interactive elements */
-    button, a, input, textarea, select {
+    /* Prevent double-tap zoom on everything */
+    * {
       touch-action: manipulation;
+    }
+    /* Re-enable panning for scrollable areas */
+    body, .admin-card, .rules-card {
+      touch-action: pan-y;
     }
 
     /* ── CSS Football ── */
@@ -820,7 +824,7 @@
     .admin-reset-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--red-dark); }
 
     /* Disable cursor on football for long press */
-    #the-ball { cursor: pointer; user-select: none; }
+    #the-ball { cursor: pointer; user-select: none; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 
     /* ── Countdown timer ── */
     .countdown-wrap {
