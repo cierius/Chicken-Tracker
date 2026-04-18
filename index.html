@@ -212,7 +212,7 @@
 
     document.getElementById("confirm-yes").addEventListener("click", async () => {
       document.getElementById("confirm-modal").classList.add("hidden");
-      await setState({ lastFoundBy: myName, lastFoundAt: USE_FIREBASE ? _serverTimestamp() : new Date(), status: "found" });
+      await setState({ lastFoundBy: myName, lastFoundAt: USE_FIREBASE ? _serverTimestamp() : new Date(), status: "found", hint: "Waiting to be hidden!" });
       const snap = await getPlayer(myName);
       if (snap.exists) {
         await updatePlayer(myName, { score: (snap.data().score || 0) + 1 });
@@ -309,7 +309,7 @@
     });
 
     document.getElementById("admin-reset").addEventListener("click", async () => {
-      await setState({ status: "found", hint: "— reset by admin —" });
+      await setState({ status: "found", hint: "Waiting to be hidden!" });
       flash("🔧 Ball reset to unhidden.");
       document.getElementById("admin-panel").classList.add("hidden");
     });
