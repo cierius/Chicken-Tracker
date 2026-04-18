@@ -41,10 +41,10 @@
     return {
       onStateSnapshot(fn) { stateListeners.push(fn); fn(state ? { exists: true, data: () => ({ ...state }) } : { exists: false }); },
       onPlayersSnapshot(fn) { playerListeners.push(fn); notifyPlayers(); },
-      async getPlayer(name) { return players[name] ? { exists: true, data: () => ({ ...players[name] }) } : { exists: false }; },
-      async setPlayer(name, data) { players[name] = { ...players[name], ...data }; notifyPlayers(); },
-      async updatePlayer(name, data) { players[name] = { ...players[name], ...data }; notifyPlayers(); },
-      async deletePlayer(name) { delete players[name]; notifyPlayers(); },
+      async getPlayer(id) { return players[id] ? { exists: true, data: () => ({ ...players[id] }) } : { exists: false }; },
+      async setPlayer(id, data) { players[id] = { ...players[id], ...data }; notifyPlayers(); },
+      async updatePlayer(id, data) { players[id] = { ...players[id], ...data }; notifyPlayers(); },
+      async deletePlayer(id) { delete players[id]; notifyPlayers(); },
       async setState(data) { state = { ...state, ...data, lastFoundAt: data.lastFoundAt === 'SERVER' ? new Date() : (state?.lastFoundAt ?? null), lastHiddenAt: data.lastHiddenAt === 'SERVER' ? new Date() : (state?.lastHiddenAt ?? null) }; notifyState(); },
     };
   })();
@@ -70,6 +70,24 @@
       if (USE_FIREBASE) return _onSnapshot(STATE_DOC, fn);
       mock.onStateSnapshot(fn);
     }
+
+    // ── Periodic re-fetch fallback (every 30s) ────────────────
+    // Guards against silent WebSocket drops on mobile
+    async function refetchState() {
+      if (!USE_FIREBASE) return;
+      try {
+        const snap = await _getDoc(STATE_DOC);
+        // Normalize to same shape as onSnapshot callback
+        stateHandler(snap.exists() ? { exists: true, data: () => snap.data() } : { exists: false });
+      } catch (e) { /* silently ignore — live listener will recover */ }
+    }
+
+    function listenAllPlayers_refetch() {
+      if (!USE_FIREBASE) return;
+      // No-op — leaderboard listener handles itself
+    }
+
+    setInterval(refetchState, 30000);
     function listenPlayers(fn) {
       if (USE_FIREBASE) {
         const q = _query(playersCol, _orderBy("score", "desc"));
@@ -77,25 +95,24 @@
       }
       mock.onPlayersSnapshot(fn);
     }
-    async function getPlayer(name) {
+    async function getPlayer(id) {
       if (USE_FIREBASE) {
-        const snap = await _getDoc(_doc(playersCol, name));
-        // Normalize to { exists, data } shape matching mock
+        const snap = await _getDoc(_doc(playersCol, id));
         return { exists: snap.exists(), data: () => snap.data() };
       }
-      return mock.getPlayer(name);
+      return mock.getPlayer(id);
     }
-    async function setPlayer(name, data) {
-      if (USE_FIREBASE) return _setDoc(_doc(playersCol, name), data, { merge: true });
-      return mock.setPlayer(name, data);
+    async function setPlayer(id, data) {
+      if (USE_FIREBASE) return _setDoc(_doc(playersCol, id), data, { merge: true });
+      return mock.setPlayer(id, data);
     }
-    async function updatePlayer(name, data) {
-      if (USE_FIREBASE) return _updateDoc(_doc(playersCol, name), data);
-      return mock.updatePlayer(name, data);
+    async function updatePlayer(id, data) {
+      if (USE_FIREBASE) return _updateDoc(_doc(playersCol, id), data);
+      return mock.updatePlayer(id, data);
     }
-    async function deletePlayer(name) {
-      if (USE_FIREBASE) return _deleteDoc(_doc(playersCol, name));
-      return mock.deletePlayer(name);
+    async function deletePlayer(id) {
+      if (USE_FIREBASE) return _deleteDoc(_doc(playersCol, id));
+      return mock.deletePlayer(id);
     }
     async function setState(data) {
       if (USE_FIREBASE) return _setDoc(STATE_DOC, data, { merge: true });
@@ -105,7 +122,13 @@
       return mock.setState(d);
     }
 
-    // ── Name registration ─────────────────────────────────────
+    // ── Device ID + name registration ────────────────────────
+    // Device gets a stable random ID — name is just a field on that record
+    let deviceId = localStorage.getItem("ballhunt_device_id");
+    if (!deviceId) {
+      deviceId = "dev_" + Math.random().toString(36).slice(2, 11);
+      localStorage.setItem("ballhunt_device_id", deviceId);
+    }
     let myName = localStorage.getItem("ballhunt_name");
 
     function showNameModal() {
@@ -118,8 +141,13 @@
       if (!val) { shake(document.getElementById("name-input")); return; }
       myName = val;
       localStorage.setItem("ballhunt_name", myName);
-      const snap = await getPlayer(myName);
-      if (!snap.exists) await setPlayer(myName, { name: myName, score: 0 });
+      // Always upsert using deviceId as key — preserves score on name change
+      const snap = await getPlayer(deviceId);
+      if (!snap.exists) {
+        await setPlayer(deviceId, { name: myName, score: 0, deviceId });
+      } else {
+        await setPlayer(deviceId, { name: myName });
+      }
       document.getElementById("name-modal").classList.add("hidden");
     }
 
@@ -152,7 +180,7 @@
       }
     }
 
-    listenState((snap) => {
+    function stateHandler(snap) {
       if (!snap.exists) {
         document.getElementById("current-hint").textContent = "Waiting to be hidden!";
         document.getElementById("last-found-by").textContent = "—";
@@ -164,7 +192,8 @@
         return;
       }
       const d = snap.data();
-      document.getElementById("current-hint").textContent = d.hint || "No hint set.";
+      const status = d.status || "unhidden";
+      document.getElementById("current-hint").textContent = status === "found" ? "Waiting to be hidden!" : (d.hint || "Waiting to be hidden!");
       document.getElementById("last-found-by").textContent = d.lastFoundBy || "—";
       document.getElementById("hidden-by").textContent = d.hiddenBy || "—";
       const hiddenTs = d.lastHiddenAt;
@@ -179,18 +208,19 @@
         const date = ts.toDate ? ts.toDate() : (ts instanceof Date ? ts : null);
         document.getElementById("last-found-when").textContent = date ? formatRelative(date) : "";
       }
-      gameStatus = d.status || "unhidden";
-      // Manage countdown timer
+      gameStatus = status;
       if (gameStatus === "found") {
-        const ts = d.lastFoundAt;
-        const date = ts?.toDate ? ts.toDate() : (ts instanceof Date ? ts : null);
-        if (date) startCountdown(date);
+        const foundTs = d.lastFoundAt;
+        const foundDate = foundTs?.toDate ? foundTs.toDate() : (foundTs instanceof Date ? foundTs : null);
+        if (foundDate) startCountdown(foundDate);
       } else {
         stopCountdown();
       }
       updateButtons();
       bounceBall();
-    });
+    }
+
+    listenState(stateHandler);
 
     // ── Live leaderboard ──────────────────────────────────────
     listenPlayers((players) => {
@@ -205,8 +235,9 @@
         const rank = i + 1;
         const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : `${rank}.`;
         const li = document.createElement("li");
-        li.className = "lb-row" + (p.name === myName ? " lb-me" : "");
-        li.innerHTML = `<span class="lb-rank">${medal}</span><span class="lb-name">${p.name}${p.name === myName ? ' <span class="lb-you">you</span>' : ''}</span><span class="lb-score">${p.score} pt${p.score !== 1 ? "s" : ""}</span>`;
+        const isMe = p.deviceId === deviceId;
+        li.className = "lb-row" + (isMe ? " lb-me" : "");
+        li.innerHTML = `<span class="lb-rank">${medal}</span><span class="lb-name">${p.name}${isMe ? ' <span class="lb-you">you</span>' : ''}</span><span class="lb-score">${p.score} pt${p.score !== 1 ? "s" : ""}</span>`;
         list.appendChild(li);
       });
     });
@@ -221,11 +252,11 @@
     document.getElementById("confirm-yes").addEventListener("click", async () => {
       document.getElementById("confirm-modal").classList.add("hidden");
       await setState({ lastFoundBy: myName, lastFoundAt: USE_FIREBASE ? _serverTimestamp() : new Date(), status: "found", hint: "Waiting to be hidden!" });
-      const snap = await getPlayer(myName);
+      const snap = await getPlayer(deviceId);
       if (snap.exists) {
-        await updatePlayer(myName, { score: (snap.data().score || 0) + 1 });
+        await updatePlayer(deviceId, { score: (snap.data().score || 0) + 1 });
       } else {
-        await setPlayer(myName, { name: myName, score: 1 });
+        await setPlayer(deviceId, { name: myName, score: 1, deviceId });
       }
       flash("🎉 Nice find, " + myName + "! +1 point");
     });
@@ -433,8 +464,8 @@
       if (newName === myName) { document.getElementById("options-modal").classList.add("hidden"); return; }
       myName = newName;
       localStorage.setItem("ballhunt_name", myName);
-      const snap = await getPlayer(myName);
-      if (!snap.exists) await setPlayer(myName, { name: myName, score: 0 });
+      // Update name field on existing device record — score preserved
+      await setPlayer(deviceId, { name: myName });
       document.getElementById("options-modal").classList.add("hidden");
       flash("✅ Name updated to " + myName);
     });
