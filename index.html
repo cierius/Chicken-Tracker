@@ -77,7 +77,11 @@
       mock.onPlayersSnapshot(fn);
     }
     async function getPlayer(name) {
-      if (USE_FIREBASE) { return _getDoc(_doc(playersCol, name)); }
+      if (USE_FIREBASE) {
+        const snap = await _getDoc(_doc(playersCol, name));
+        // Normalize to { exists, data } shape matching mock
+        return { exists: snap.exists(), data: () => snap.data() };
+      }
       return mock.getPlayer(name);
     }
     async function setPlayer(name, data) {
