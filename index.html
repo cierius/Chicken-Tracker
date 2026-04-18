@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>Chicken Tracker</title>
 
   <script>
@@ -299,16 +299,22 @@
       document.getElementById("rules-modal").classList.add("hidden");
     });
 
-    // ── Long press on football → admin ──────────────────────
-    let pressTimer = null;
+    // ── 5 taps on football → admin ───────────────────────────
+    let tapCount = 0;
+    let tapTimer = null;
     const ballEl = document.getElementById("the-ball");
 
-    ballEl.addEventListener("pointerdown", () => {
-      pressTimer = setTimeout(() => showAdminPassword(), 500);
+    ballEl.addEventListener("click", () => {
+      tapCount++;
+      clearTimeout(tapTimer);
+      if (tapCount >= 5) {
+        tapCount = 0;
+        showAdminPassword();
+      } else {
+        // Reset count if no tap within 1.5s
+        tapTimer = setTimeout(() => { tapCount = 0; }, 1500);
+      }
     });
-    ["pointerup", "pointerleave", "pointercancel"].forEach(e =>
-      ballEl.addEventListener(e, () => clearTimeout(pressTimer))
-    );
 
     function showAdminPassword() {
       document.getElementById("admin-pw-modal").classList.remove("hidden");
@@ -514,6 +520,19 @@
       min-height: 100vh;
       display: flex; flex-direction: column; align-items: center;
       padding: 24px 16px 64px;
+      overscroll-behavior: none;
+      -webkit-touch-callout: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    /* Re-enable selection for inputs and textareas */
+    input, textarea {
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    /* Prevent double-tap zoom on all buttons and interactive elements */
+    button, a, input, textarea, select {
+      touch-action: manipulation;
     }
 
     /* ── CSS Football ── */
