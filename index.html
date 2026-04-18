@@ -180,6 +180,14 @@
         document.getElementById("last-found-when").textContent = date ? formatRelative(date) : "";
       }
       gameStatus = d.status || "unhidden";
+      // Manage countdown timer
+      if (gameStatus === "found") {
+        const ts = d.lastFoundAt;
+        const date = ts?.toDate ? ts.toDate() : (ts instanceof Date ? ts : null);
+        if (date) startCountdown(date);
+      } else {
+        stopCountdown();
+      }
       updateButtons();
       bounceBall();
     });
@@ -373,6 +381,63 @@
         });
       });
     }
+
+    // ── Countdown timer ──────────────────────────────────────
+    let countdownInterval = null;
+    let foundAtDate = null;
+
+    function startCountdown(date) {
+      foundAtDate = date;
+      document.getElementById("countdown-wrap").classList.remove("hidden");
+      clearInterval(countdownInterval);
+      tickCountdown();
+      countdownInterval = setInterval(tickCountdown, 1000);
+    }
+
+    function stopCountdown() {
+      clearInterval(countdownInterval);
+      foundAtDate = null;
+      document.getElementById("countdown-wrap").classList.add("hidden");
+    }
+
+    function tickCountdown() {
+      if (!foundAtDate) return;
+      const elapsed = Date.now() - foundAtDate.getTime();
+      const remaining = (60 * 60 * 1000) - elapsed;
+      const el = document.getElementById("countdown-timer");
+      if (remaining <= 0) {
+        el.textContent = "Overdue!";
+        el.classList.add("countdown-overdue");
+      } else {
+        const m = Math.floor(remaining / 60000);
+        const s = Math.floor((remaining % 60000) / 1000);
+        el.textContent = `${m}:${s.toString().padStart(2, "0")}`;
+        el.classList.remove("countdown-overdue");
+      }
+    }
+
+    // ── Options modal ─────────────────────────────────────────
+    document.getElementById("options-btn").addEventListener("click", () => {
+      document.getElementById("options-name-input").value = myName || "";
+      document.getElementById("options-modal").classList.remove("hidden");
+      setTimeout(() => document.getElementById("options-name-input").focus(), 50);
+    });
+
+    document.getElementById("options-close").addEventListener("click", () => {
+      document.getElementById("options-modal").classList.add("hidden");
+    });
+
+    document.getElementById("options-save").addEventListener("click", async () => {
+      const newName = document.getElementById("options-name-input").value.trim();
+      if (!newName) { shake(document.getElementById("options-name-input")); return; }
+      if (newName === myName) { document.getElementById("options-modal").classList.add("hidden"); return; }
+      myName = newName;
+      localStorage.setItem("ballhunt_name", myName);
+      const snap = await getPlayer(myName);
+      if (!snap.exists) await setPlayer(myName, { name: myName, score: 0 });
+      document.getElementById("options-modal").classList.add("hidden");
+      flash("✅ Name updated to " + myName);
+    });
 
     // ── Helpers ───────────────────────────────────────────────
     function bounceBall() {
@@ -707,6 +772,26 @@
     /* Disable cursor on football for long press */
     #the-ball { cursor: pointer; user-select: none; }
 
+    /* ── Countdown timer ── */
+    .countdown-wrap {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 10px; padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+    .countdown-wrap.hidden { display: none; }
+    .countdown-label {
+      font-size: 0.72rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--muted);
+    }
+    .countdown-timer {
+      font-family: 'Lilita One', cursive;
+      font-size: 1.1rem;
+      color: var(--ink);
+      transition: color 0.3s;
+    }
+    .countdown-overdue { color: var(--red) !important; }
+
     /* ── Rules button ── */
     .rules-btn {
       position: fixed;
@@ -783,6 +868,22 @@
       margin-top: 18px; font-size: 0.78rem;
       color: var(--muted); text-align: center;
       border-top: 1px solid var(--border); padding-top: 14px;
+    }
+
+    /* ── Options modal ── */
+    .options-card {
+      text-align: left;
+      padding: 26px 24px 22px;
+    }
+    .options-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    .options-header h2 { font-family: 'Lilita One', cursive; font-size: 1.2rem; }
+    .options-section-label {
+      font-size: 0.68rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.12em;
+      color: #b08040; margin-bottom: 8px;
     }
 
     /* ── Confirm modal ── */
@@ -866,6 +967,10 @@
   <div class="card">
     <div class="card-label">Current Hint</div>
     <div class="hint-text" id="current-hint">No hint yet — be the first to hide the Chicken!</div>
+    <div class="countdown-wrap hidden" id="countdown-wrap">
+      <span class="countdown-label">Hide deadline:</span>
+      <span class="countdown-timer" id="countdown-timer">—</span>
+    </div>
     <div class="meta-row">
       <div class="meta-item">
         <div class="card-label">Last Found By</div>
@@ -899,6 +1004,21 @@
     <ul id="leaderboard-list">
       <li class="lb-empty">No scores yet — find the Chicken!</li>
     </ul>
+  </div>
+
+  <!-- Options modal -->
+  <div class="modal-backdrop hidden" id="options-modal">
+    <div class="modal-card options-card">
+      <div class="options-header">
+        <h2>Options</h2>
+        <button class="admin-close-btn" id="options-close">✕</button>
+      </div>
+      <div class="options-section-label">Your Name</div>
+      <input type="text" id="options-name-input" placeholder="Your name" autocomplete="off" maxlength="24" />
+      <div class="form-actions">
+        <button class="btn-submit" id="options-save" style="padding:11px;">Save</button>
+      </div>
+    </div>
   </div>
 
   <!-- Rules modal -->
