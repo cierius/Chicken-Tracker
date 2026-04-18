@@ -44,6 +44,7 @@
       async getPlayer(name) { return players[name] ? { exists: true, data: () => ({ ...players[name] }) } : { exists: false }; },
       async setPlayer(name, data) { players[name] = { ...players[name], ...data }; notifyPlayers(); },
       async updatePlayer(name, data) { players[name] = { ...players[name], ...data }; notifyPlayers(); },
+      async deletePlayer(name) { delete players[name]; notifyPlayers(); },
       async setState(data) { state = { ...state, ...data, lastFoundAt: data.lastFoundAt === 'SERVER' ? new Date() : (state?.lastFoundAt ?? null) }; notifyState(); },
     };
   })();
@@ -51,7 +52,7 @@
 
   <script type="module">
     let db, STATE_DOC, playersCol,
-        _onSnapshot, _setDoc, _getDoc, _updateDoc, _doc, _collection, _query, _orderBy;
+        _onSnapshot, _setDoc, _getDoc, _updateDoc, _doc, _collection, _query, _orderBy, _deleteDoc;
 
     if (USE_FIREBASE) {
       const fb   = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
@@ -61,7 +62,7 @@
       STATE_DOC  = fs.doc(db, "ballhunt", "state");
       playersCol = fs.collection(db, "ballhunt_players");
       _onSnapshot = fs.onSnapshot; _setDoc = fs.setDoc; _getDoc = fs.getDoc;
-      _updateDoc  = fs.updateDoc;  _doc    = fs.doc;
+      _updateDoc  = fs.updateDoc;  _doc    = fs.doc;  _deleteDoc = fs.deleteDoc;
       _query = fs.query; _orderBy = fs.orderBy;
     }
 
@@ -91,6 +92,10 @@
     async function updatePlayer(name, data) {
       if (USE_FIREBASE) return _updateDoc(_doc(playersCol, name), data);
       return mock.updatePlayer(name, data);
+    }
+    async function deletePlayer(name) {
+      if (USE_FIREBASE) return _deleteDoc(_doc(playersCol, name));
+      return mock.deletePlayer(name);
     }
     async function setState(data) {
       if (USE_FIREBASE) return _setDoc(STATE_DOC, data, { merge: true });
@@ -294,8 +299,17 @@
 
     let adminPlayers = [];
 
-    listenPlayers((players) => {
-      adminPlayers = players;
+    // Separate listener for admin that includes zero-score players
+    function listenAllPlayers(fn) {
+      if (USE_FIREBASE) {
+        const q = _query(playersCol, _orderBy("score", "desc"));
+        return _onSnapshot(q, snap => { const arr = []; snap.forEach(d => arr.push(d.data())); fn(arr); });
+      }
+      mock.onPlayersSnapshot(fn);
+    }
+
+    listenAllPlayers((players) => {
+      adminPlayers = players; // includes zero-score
       if (!document.getElementById("admin-panel").classList.contains("hidden")) {
         renderAdminPlayers();
       }
@@ -308,10 +322,12 @@
         list.innerHTML = `<p style="color:var(--muted);font-size:0.85rem;">No players yet.</p>`;
         return;
       }
+      // Show ALL players including zero-score ones
       adminPlayers.forEach(p => {
         const row = document.createElement("div");
         row.className = "admin-player-row";
         row.innerHTML = `
+          <button class="admin-remove" data-name="${p.name}" title="Remove player">🗑️</button>
           <span class="admin-player-name">${p.name}</span>
           <div class="admin-score-controls">
             <button class="admin-adj" data-name="${p.name}" data-delta="-1">−</button>
@@ -329,6 +345,14 @@
           const newScore = Math.max(0, (player.score || 0) + delta);
           await setPlayer(name, { name, score: newScore });
           flash(`✏️ ${name}: ${newScore} pt${newScore !== 1 ? "s" : ""}`);
+        });
+      });
+      list.querySelectorAll(".admin-remove").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const name = btn.dataset.name;
+          if (!confirm(`Remove ${name} from the leaderboard?`)) return;
+          await deletePlayer(name);
+          flash(`🗑️ ${name} removed.`);
         });
       });
     }
@@ -647,6 +671,12 @@
     }
     .admin-adj:active { background: var(--border); }
     .admin-score-val { font-family: 'Lilita One', cursive; font-size: 1rem; min-width: 24px; text-align: center; }
+    .admin-remove {
+      background: none; border: none; cursor: pointer;
+      font-size: 1rem; padding: 2px 4px; opacity: 0.5;
+      transition: opacity 0.15s;
+    }
+    .admin-remove:hover { opacity: 1; }
     .admin-reset-btn {
       width: 100%; margin-top: 18px; padding: 12px;
       border: none; border-radius: 12px;
