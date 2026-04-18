@@ -52,7 +52,7 @@
 
   <script type="module">
     let db, STATE_DOC, playersCol,
-        _onSnapshot, _setDoc, _getDoc, _updateDoc, _doc, _collection, _query, _orderBy, _deleteDoc;
+        _onSnapshot, _setDoc, _getDoc, _updateDoc, _doc, _collection, _query, _orderBy, _deleteDoc, _serverTimestamp;
 
     if (USE_FIREBASE) {
       const fb   = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
@@ -63,7 +63,7 @@
       playersCol = fs.collection(db, "ballhunt_players");
       _onSnapshot = fs.onSnapshot; _setDoc = fs.setDoc; _getDoc = fs.getDoc;
       _updateDoc  = fs.updateDoc;  _doc    = fs.doc;  _deleteDoc = fs.deleteDoc;
-      _query = fs.query; _orderBy = fs.orderBy;
+      _query = fs.query; _orderBy = fs.orderBy; _serverTimestamp = fs.serverTimestamp;
     }
 
     function listenState(fn) {
@@ -212,7 +212,7 @@
 
     document.getElementById("confirm-yes").addEventListener("click", async () => {
       document.getElementById("confirm-modal").classList.add("hidden");
-      await setState({ lastFoundBy: myName, lastFoundAt: USE_FIREBASE ? { serverTimestamp: true } : new Date(), status: "found" });
+      await setState({ lastFoundBy: myName, lastFoundAt: USE_FIREBASE ? _serverTimestamp() : new Date(), status: "found" });
       const snap = await getPlayer(myName);
       if (snap.exists) {
         await updatePlayer(myName, { score: (snap.data().score || 0) + 1 });
@@ -238,7 +238,7 @@
     document.getElementById("submit-hide").addEventListener("click", async () => {
       const hint = document.getElementById("hint-input").value.trim();
       if (!hint) { shake(document.getElementById("hint-input")); return; }
-      await setState({ hiddenBy: myName, hint, status: "hidden", lastHiddenAt: USE_FIREBASE ? { serverTimestamp: true } : new Date() });
+      await setState({ hiddenBy: myName, hint, status: "hidden", lastHiddenAt: USE_FIREBASE ? _serverTimestamp() : new Date() });
       document.getElementById("hint-input").value = "";
       document.getElementById("hide-form").classList.add("hidden");
       flash("🫣 Chicken hidden! Good luck everyone.");
